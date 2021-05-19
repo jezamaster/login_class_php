@@ -23,10 +23,19 @@ class Login extends sqlPDO {
     $_SESSION['user_name'] = $user_name;
   }
 
-  function unsetSessions() {
-    unset($_SESSION['user_id']);
-    unset($_SESSION['name']);
-    unset($_SESSION['user_name']);
+  function logoutUser() {
+    try {
+      unset($_SESSION['user_id']);
+      unset($_SESSION['name']);
+      unset($_SESSION['user_name']);
+      // set cookies to empty values with expiry time 1 second
+      if(isset($_COOKIE['userid'])) setcookie("userid", " ", 1);
+      if(isset($_COOKIE['usertoken'])) setcookie("usertoken", " ", 1);
+      return true;
+    }
+    catch (Exception $e) {
+      return false;
+    }
   }
 
   function generateToken($length = 20) {
@@ -36,11 +45,11 @@ class Login extends sqlPDO {
   function checkPermanentLogin() {
     // check if permanent login is set, get user data
     $permanent_login = false;
-    if(isset($_COOKIE['permuserid']) && $_COOKIE['permusertoken'] !='') {
-      $token = $this->getUserToken($_COOKIE['permuserid']);
-      if(password_verify($_COOKIE['permusertoken'], $token)) {
-        $user_data = $this->getUserData($this->getUserByID($_COOKIE['permuserid']));
-        setSessions($user_data[0]['id'], $user_data[0]['name'], $user_data[0]['user_name']);
+    if(isset($_COOKIE['userid']) && $_COOKIE['usertoken'] !='') {
+      $token = $this->getUserToken($_COOKIE['userid']);
+      if(password_verify($_COOKIE['usertoken'], $token)) {
+        $user_data = $this->getUserData($this->getUserByID($_COOKIE['userid']));
+        $this->setSessions($user_data[0]['id'], $user_data[0]['name'], $user_data[0]['user_name']);
         // update the user's number of visits
         $this->updateLoginStats();
         return true;
@@ -94,15 +103,46 @@ class Login extends sqlPDO {
     $dotaz->bindParam(":user_id", $_SESSION['user_id']);
     $dotaz->execute();
   }
+  
+  // hash and save permanent login token into database
+  function saveToken($user_id, $token) {
+    $token = password_hash($token, PASSWORD_DEFAULT);
+    // check if the user already has a token, if so, update it, if not insert new
+    $dotaz = $this->pdo->prepare("select id from auth_token where user_id=:user_id");
+    $dotaz->bindParam(":user_id", $user_id);
+    $dotaz->execute();
+    if($dotaz->rowCount()>0) {
+      $query = $this->pdo->prepare("update auth_token set token =:token where user_id=:user_id");
+    }
+    else {
+      $query = $this->pdo->prepare("insert into auth_token (user_id, token) values(:user_id, :token)");
+    }
+    $query->bindParam(":user_id", $user_id);
+    $query->bindParam(":token", $token);
+    $query->execute();
+  }
  
+  // set cookies for permanent login and save token to database
+  function setCookies($user_id) {
+    $token = $this->generateToken();
+    setcookie("userid", $user_id, time()+(3600 * 4320)); // expires in 6 months
+    setcookie("usertoken", $token, time()+(3600 * 4320));
+    // save token into the database
+    $this->saveToken($user_id, $token);
+  }
+  
   // log in the user based on the sent user name and password
-  function loginUser($user_name, $password) { 
+  function loginUser($user_name, $password, $permanent_login = false) { 
     $email = filter_var(trim($user_name), FILTER_SANITIZE_EMAIL);
     $user_data = $this->getUserData($email);
     // check if password matches
     if(password_verify($password, $user_data[0]['password'])) {  
-      // set sessions and return true
+      // set sessions 
       $this->setSessions($user_data[0]['id'], $user_data[0]['name'], $user_data[0]['user_name']);
+      // set cookies for permanent login if required
+      if($permanent_login === true) {
+        $this->setCookies($user_data[0]['id']);
+      }
       // update user's visits
       // $this->updateLoginStats();
       return true;
